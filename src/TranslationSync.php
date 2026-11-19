@@ -8,22 +8,13 @@ use Symfony\Component\Yaml\Yaml;
 /**
  * Keeps translation files on several release branches in sync with one catalog branch.
  *
- * The catalog is made of layers. Each layer has a source snapshot (`en/<file>`, the source
- * text its translations were made for) and one `<language>/<file>` per language, which lists
- * every source string and comments out the untranslated ones.
- *
- * - The root layer holds the newest source text of every string used by any branch.
- * - `overrides/<branch>/` holds the strings whose source text on that branch differs from
- *   the root layer's, such as an email body that changed on a newer branch.
- *
- * A translation always belongs to a key and the exact source text it was made for. When a
- * string's source text changes, the old translation stays with the branches that still use
- * the old text, and the new text starts out untranslated.
+ * The catalog branch holds `translation-sync.yml` and one `<language>/<file>` per language.
+ * Each catalog file lists every source string used by any configured branch, with the
+ * untranslated ones commented out. A translation applies to its key on every branch.
  */
 final class TranslationSync
 {
     private const PR_BRANCH_PREFIX = 'translation-sync/';
-    private const OVERRIDES_DIR = 'overrides';
 
     private Git $git;
     private string $sourceLanguage;
@@ -52,25 +43,22 @@ final class TranslationSync
 
     /**
      * Builds the catalog from the translation files currently on each branch. When branches
-     * translate the same source text differently, the newest branch wins, and each conflict
-     * is listed for review.
+     * translate a string differently, the newest branch wins, and each conflict is listed
+     * for review.
      */
     public function bootstrap(): void
     {
         $sources = $this->readSources();
-        $union = $this->unionSources($sources);
-        $root = ['source' => $union, 'translations' => []];
-        $overrides = [];
+        $catalog = [];
         $found = [];
-        $languages = [];
 
         foreach ($this->branches as $branch => $path) {
             foreach ($this->git->dirs($this->ref($branch), $path) as $language) {
                 if (!$this->isTargetLanguage($language)) {
                     continue;
                 }
-                $languages[$language] = true;
                 foreach ($this->files as $file) {
+                    $catalog[$language][$file] ??= [];
                     $code = $this->git->show($this->ref($branch), "$path/$language/$file");
                     if ($code === null) {
                         continue;
@@ -81,28 +69,16 @@ final class TranslationSync
                         if ($source === null || $translation === $source || $translation === '') {
                             continue;
                         }
-                        if ($source === $union[$file][$key]) {
-                            $root['translations'][$language][$file][$key] = $translation;
-                            $found[$language][$file][$key][$branch] = $translation;
-                        } else {
-                            $overrides[$branch]['source'][$file][$key] = $source;
-                            $overrides[$branch]['translations'][$language][$file][$key] = $translation;
-                        }
+                        $catalog[$language][$file][$key] = $translation;
+                        $found[$language][$file][$key][$branch] = $translation;
                     }
                 }
             }
         }
 
-        // Every string with branch-specific source text gets an override, translated or not.
-        foreach ($this->divergentSources($sources, $union) as $branch => $files) {
-            $overrides[$branch]['source'] = $files;
-            $overrides[$branch]['translations'] ??= [];
-        }
-
-        $languages = array_keys($languages);
-        sort($languages);
-        $this->writeCatalog($root, $overrides, $languages, false);
-        $this->printStatus($root, $overrides, $languages);
+        $union = $this->unionSources($sources);
+        $this->writeCatalog($catalog, $union, false);
+        $this->printStatus($catalog, $union);
 
         foreach ($found as $language => $files) {
             foreach ($files as $file => $keys) {
@@ -130,23 +106,21 @@ final class TranslationSync
             $this->git->run('git', 'fetch', '--no-tags', '--depth=1', $this->remote, ...$refspecs);
         }
         $sources = $this->readSources();
-        $union = $this->unionSources($sources);
-        $languages = $this->catalogLanguages();
-        [$root, $overrides] = $this->harvest($sources, $union, $languages);
+        $catalog = $this->readCatalog();
         $catalogBranch = trim($this->git->run('git', 'rev-parse', '--abbrev-ref', 'HEAD'));
 
-        $changedPaths = $this->writeCatalog($root, $overrides, $languages, $dryRun);
+        $changedPaths = $this->writeCatalog($catalog, $this->unionSources($sources), $dryRun);
         if ($changedPaths) {
             printf("%s %d catalog files\n", $dryRun ? 'Would update' : 'Updating', count($changedPaths));
             if (!$dryRun) {
-                $this->git->run('git', 'add', '-A', '--', ...$changedPaths);
+                $this->git->run('git', 'add', '--', ...$changedPaths);
                 $this->git->run('git', 'commit', '-m', 'Update source strings');
                 $this->git->run('git', 'push', $this->remote, "HEAD:refs/heads/$catalogBranch");
             }
         }
 
         foreach ($this->branches as $branch => $path) {
-            $this->syncBranch($branch, $path, $sources[$branch], $union, $root, $overrides[$branch] ?? null, $languages, $catalogBranch, $dryRun, $openPullRequests);
+            $this->syncBranch($branch, $path, $sources[$branch], $catalog, $catalogBranch, $dryRun, $openPullRequests);
         }
     }
 
@@ -155,60 +129,14 @@ final class TranslationSync
      */
     public function status(): void
     {
-        $sources = $this->readSources();
-        $languages = $this->catalogLanguages();
-        [$root, $overrides] = $this->harvest($sources, $this->unionSources($sources), $languages);
-        $this->printStatus($root, $overrides, $languages);
+        $this->printStatus($this->readCatalog(), $this->unionSources($this->readSources()));
     }
 
     /**
-     * Rebuilds the catalog's layers from the branches' current source strings, carrying over
-     * every translation whose key and source text still match.
-     *
-     * @return array{0:array,1:array<string,array>} The root layer and the override layers by branch.
+     * @param array<string,array<string,string>> $sources File => [key => source text] for this branch
+     * @param array<string,array<string,array<string,string>>> $catalog
      */
-    private function harvest(array $sources, array $union, array $languages): array
-    {
-        $oldRoot = $this->readLayer($this->dir, $languages);
-        $oldOverrides = [];
-        foreach (array_keys($this->branches) as $branch) {
-            $oldOverrides[$branch] = $this->readLayer("$this->dir/" . self::OVERRIDES_DIR . "/$branch", $languages);
-        }
-
-        $root = ['source' => $union, 'translations' => []];
-        $this->fillTranslations($root, $languages, [$oldRoot, ...array_values($oldOverrides)]);
-
-        $overrides = [];
-        foreach ($this->divergentSources($sources, $union) as $branch => $files) {
-            $overrides[$branch] = ['source' => $files, 'translations' => []];
-            $others = array_diff_key($oldOverrides, [$branch => true]);
-            $this->fillTranslations($overrides[$branch], $languages, [$oldOverrides[$branch], $oldRoot, ...array_values($others)]);
-        }
-
-        return [$root, $overrides];
-    }
-
-    /**
-     * Fills a layer's translations from the first of the given layers that translated the same
-     * key from the same source text.
-     */
-    private function fillTranslations(array &$layer, array $languages, array $from): void
-    {
-        foreach ($languages as $language) {
-            foreach ($layer['source'] as $file => $strings) {
-                foreach ($strings as $key => $text) {
-                    foreach ($from as $old) {
-                        if (($old['source'][$file][$key] ?? null) === $text && isset($old['translations'][$language][$file][$key])) {
-                            $layer['translations'][$language][$file][$key] = $old['translations'][$language][$file][$key];
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    private function syncBranch(string $branch, string $path, array $sources, array $union, array $root, ?array $override, array $languages, string $catalogBranch, bool $dryRun, bool $openPullRequests): void
+    private function syncBranch(string $branch, string $path, array $sources, array $catalog, string $catalogBranch, bool $dryRun, bool $openPullRequests): void
     {
         $prBranch = self::PR_BRANCH_PREFIX . $branch;
         $worktree = sys_get_temp_dir() . '/translation-sync-' . getmypid() . '-' . preg_replace('/[^\w.-]/', '_', $branch);
@@ -217,27 +145,38 @@ final class TranslationSync
         try {
             $git = new Git($worktree);
             $changes = [];
-            foreach ($languages as $language) {
+            foreach ($catalog as $language => $files) {
                 foreach ($this->files as $file) {
                     if (!$sources[$file]) {
                         continue;
                     }
-                    $rows = [];
                     $new = [];
                     foreach ($sources[$file] as $key => $text) {
-                        $layer = $text === $union[$file][$key] ? $root : $override;
-                        $new[$key] = $layer['translations'][$language][$file][$key] ?? $text;
-                        $rows[] = [$key, $new[$key]];
+                        // Untranslated strings are left out, so Yii falls back to the source text.
+                        // A message ID such as `account_activation_body` isn't its own source text,
+                        // so it falls back to the source text explicitly.
+                        $translation = $files[$file][$key] ?? ((string)$key !== $text ? $text : null);
+                        if ($translation !== null) {
+                            $new[$key] = $translation;
+                        }
                     }
                     $target = "$worktree/$path/$language/$file";
                     $old = is_file($target) ? file_get_contents($target) : null;
-                    $content = PhpArrayFile::render($rows, $old ?? file_get_contents("$worktree/$path/$this->sourceLanguage/$file"));
+                    $content = PhpArrayFile::render(
+                        array_map(null, array_keys($new), $new),
+                        $old ?? file_get_contents("$worktree/$path/$this->sourceLanguage/$file"),
+                    );
                     if ($old === $content) {
                         continue;
                     }
                     $oldEntries = $old === null ? [] : PhpArrayFile::parse($old, "$branch:$path/$language/$file");
-                    $changed = count(array_diff_assoc($new, $oldEntries)) + count(array_diff_key($oldEntries, $new));
-                    $changes[] = [$language, $file, $changed];
+                    $changes[] = [
+                        $language,
+                        $file,
+                        count(array_diff_key($new, $oldEntries)),
+                        count(array_intersect_key(array_diff_assoc($new, $oldEntries), $oldEntries)),
+                        count(array_diff_key($oldEntries, $new)),
+                    ];
                     if (!is_dir(dirname($target))) {
                         mkdir(dirname($target), 0777, true);
                     }
@@ -253,9 +192,9 @@ final class TranslationSync
                 return;
             }
 
-            $body = "Updates translations on `$branch` from the `$catalogBranch` branch.\n\n| Language | File | Strings changed |\n| --- | --- | --- |\n";
-            foreach ($changes as [$language, $file, $changed]) {
-                $body .= "| $language | $file | $changed |\n";
+            $body = "Updates translations on `$branch` from the `$catalogBranch` branch.\n\n| Language | File | Added | Changed | Removed |\n| --- | --- | --- | --- | --- |\n";
+            foreach ($changes as $row) {
+                $body .= '| ' . implode(' | ', $row) . " |\n";
             }
             $body .= "\nTo change a translation, edit it on the `$catalogBranch` branch. The sync rebuilds this pull request each time it runs, so commits pushed here get overwritten.\n";
             echo "$branch: " . count($changes) . " files out of date\n" . $git->run('git', 'diff', '--stat');
@@ -328,132 +267,66 @@ final class TranslationSync
     }
 
     /**
-     * @return array<string,array<string,array<string,string>>> Branch => file => [key => source text]
-     * for the strings whose source text on that branch differs from the union's.
+     * @return array<string,array<string,array<string,string>>> Language => file => [key => translation]
      */
-    private function divergentSources(array $sources, array $union): array
+    private function readCatalog(): array
     {
-        $divergent = [];
-        foreach ($sources as $branch => $files) {
-            foreach ($files as $file => $strings) {
-                foreach ($strings as $key => $text) {
-                    if ($text !== $union[$file][$key]) {
-                        $divergent[$branch][$file][$key] = $text;
-                    }
-                }
-            }
-        }
-        return $divergent;
-    }
-
-    /**
-     * @return string[] The languages in the catalog's root layer.
-     */
-    private function catalogLanguages(): array
-    {
-        $languages = [];
-        foreach (scandir($this->dir) as $name) {
-            if ($name[0] !== '.' && $name !== self::OVERRIDES_DIR && is_dir("$this->dir/$name") && $this->isTargetLanguage($name)) {
-                $languages[] = $name;
-            }
-        }
-        return $languages;
-    }
-
-    /**
-     * @return array{source:array<string,array<string,string>>,translations:array<string,array<string,array<string,string>>>}
-     */
-    private function readLayer(string $dir, array $languages): array
-    {
-        $layer = ['source' => [], 'translations' => []];
-        foreach ($this->files as $file) {
-            $path = "$dir/$this->sourceLanguage/$file";
-            if (!is_file($path)) {
+        $catalog = [];
+        foreach (scandir($this->dir) as $language) {
+            if ($language[0] === '.' || !is_dir("$this->dir/$language") || !$this->isTargetLanguage($language)) {
                 continue;
             }
-            $layer['source'][$file] = PhpArrayFile::parse(file_get_contents($path), $path);
-            foreach ($languages as $language) {
-                $path = "$dir/$language/$file";
-                if (is_file($path)) {
-                    $translations = array_filter(PhpArrayFile::parse(file_get_contents($path), $path), fn($t) => $t !== '');
-                    $layer['translations'][$language][$file] = $translations;
-                }
+            foreach ($this->files as $file) {
+                $path = "$this->dir/$language/$file";
+                $translations = is_file($path) ? PhpArrayFile::parse(file_get_contents($path), "$language/$file") : [];
+                $catalog[$language][$file] = array_filter($translations, fn($t) => $t !== '');
             }
         }
-        return $layer;
+        return $catalog;
     }
 
     /**
-     * Writes the catalog's layers and deletes override files that are no longer needed.
+     * Writes each catalog file with every source string, commenting out the untranslated ones.
+     * Translations of strings that no branch uses anymore are dropped.
      *
      * @return string[] Paths that changed, relative to the catalog directory.
      */
-    private function writeCatalog(array $root, array $overrides, array $languages, bool $dryRun): array
+    private function writeCatalog(array $catalog, array $union, bool $dryRun): array
     {
-        $files = $this->renderLayer('', $root, $languages);
-        foreach ($overrides as $branch => $layer) {
-            $files += $this->renderLayer(self::OVERRIDES_DIR . "/$branch/", $layer, $languages);
-        }
-
-        $existing = [];
-        if (is_dir("$this->dir/" . self::OVERRIDES_DIR)) {
-            $iterator = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator("$this->dir/" . self::OVERRIDES_DIR, \FilesystemIterator::SKIP_DOTS));
-            foreach ($iterator as $item) {
-                $existing[] = substr($item->getPathname(), strlen($this->dir) + 1);
-            }
-        }
-
+        ksort($catalog);
         $changed = [];
-        foreach ($files as $path => $content) {
-            $absolute = "$this->dir/$path";
-            if (!is_file($absolute) || file_get_contents($absolute) !== $content) {
-                $changed[] = $path;
-                if (!$dryRun) {
-                    if (!is_dir(dirname($absolute))) {
-                        mkdir(dirname($absolute), 0777, true);
-                    }
-                    file_put_contents($absolute, $content);
+        foreach ($catalog as $language => $files) {
+            foreach ($this->files as $file) {
+                $rows = [];
+                foreach ($union[$file] as $key => $source) {
+                    $translation = $files[$file][$key] ?? null;
+                    $rows[] = $translation !== null ? [$key, $translation] : [$key, $source, true];
                 }
-            }
-        }
-        foreach (array_diff($existing, array_keys($files)) as $path) {
-            $changed[] = $path;
-            if (!$dryRun) {
-                unlink("$this->dir/$path");
+                $content = PhpArrayFile::render($rows);
+                $path = "$this->dir/$language/$file";
+                if (!is_file($path) || file_get_contents($path) !== $content) {
+                    $changed[] = "$language/$file";
+                    if (!$dryRun) {
+                        if (!is_dir(dirname($path))) {
+                            mkdir(dirname($path), 0777, true);
+                        }
+                        file_put_contents($path, $content);
+                    }
+                }
             }
         }
         return $changed;
     }
 
-    /**
-     * @return array<string,string> Path => content
-     */
-    private function renderLayer(string $prefix, array $layer, array $languages): array
+    private function printStatus(array $catalog, array $union): void
     {
-        $files = [];
-        foreach ($layer['source'] as $file => $strings) {
-            $files["$prefix$this->sourceLanguage/$file"] = PhpArrayFile::render(array_map(null, array_keys($strings), $strings));
-            foreach ($languages as $language) {
-                $translations = $layer['translations'][$language][$file] ?? [];
-                $rows = [];
-                foreach ($strings as $key => $text) {
-                    $rows[] = isset($translations[$key]) ? [$key, $translations[$key]] : [$key, $text, true];
-                }
-                $files["$prefix$language/$file"] = PhpArrayFile::render($rows);
-            }
-        }
-        return $files;
-    }
-
-    private function printStatus(array $root, array $overrides, array $languages): void
-    {
-        foreach (['' => $root] + $overrides as $branch => $layer) {
-            foreach ($layer['source'] as $file => $strings) {
-                printf("%s%s (%d strings)\n", $branch === '' ? '' : self::OVERRIDES_DIR . "/$branch/", $file, count($strings));
-                foreach ($languages as $language) {
-                    $translated = count($layer['translations'][$language][$file] ?? []);
-                    printf("  %-6s %5d translated, %5d missing\n", $language, $translated, count($strings) - $translated);
-                }
+        ksort($catalog);
+        foreach ($this->files as $file) {
+            $total = count($union[$file]);
+            echo "$file ($total strings)\n";
+            foreach ($catalog as $language => $files) {
+                $translated = count(array_intersect_key($files[$file] ?? [], $union[$file]));
+                printf("  %-6s %5d translated, %5d missing\n", $language, $translated, $total - $translated);
             }
         }
     }

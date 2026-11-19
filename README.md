@@ -18,11 +18,8 @@ A repository keeps its catalog on a dedicated branch, `translations` by default.
 
 ```
 translation-sync.yml
-en/app.php              source text the translations were made for (written by the sync)
 de/app.php              German translations
 ja/app.php
-overrides/5.x/en/app.php
-overrides/5.x/de/app.php
 ```
 
 In each language file, untranslated strings are commented out and show the source text. To translate one, uncomment the line and replace the value:
@@ -35,13 +32,11 @@ In each language file, untranslated strings are commented out and show the sourc
 The `sync` command runs on a schedule and after each push to the catalog branch. It does two things:
 
 1. It reads each branch's source file (`en/app.php`) and updates the catalog. New strings appear as commented-out lines, and strings that no branch uses anymore are removed. It commits these changes to the catalog branch.
-2. For each branch, it builds every language file from that branch's source strings and the catalog's translations. If any file differs from the branch, it force-pushes a `translation-sync/<branch>` branch and opens or updates a pull request. Strings without a translation keep their source text, matching what Crowdin exported.
+2. For each branch, it builds every language file from that branch's source strings and the catalog's translations. If any file differs from the branch, it force-pushes a `translation-sync/<branch>` branch and opens or updates a pull request. A branch's files include only the keys in that branch's source file, and leave out untranslated strings so Yii falls back to the source text. Message IDs such as `account_activation_body` are the exception: their untranslated entries keep the source text, because the key isn't readable text.
 
-### Strings whose source text differs between branches
+### One translation per key
 
-A translation belongs to a key and the exact source text it was made for. Most keys are the source text, so this only matters for message IDs such as `account_activation_body`, whose text can change between branches.
-
-When a branch's source text for a key differs from the newest branch's, that branch's translations for the key live in `overrides/<branch>/`. When a key's source text changes on one branch, the other branches keep the old translation, and the new text starts out untranslated.
+A translation applies to its key on every branch. The catalog holds one translation per key and language. When `bootstrap` finds branches that translate a key differently, it keeps the newest branch's translation.
 
 ## Setting up a repository
 
@@ -53,25 +48,24 @@ When a branch's source text for a key differs from the newest branch's, that bra
 
    ```yaml
    # translation-sync.yml
-   # Branches whose translation files are kept in sync, oldest first.
-   # When bootstrapping, the newest branch's translation wins.
+   # Branches whose translation files are kept in sync, oldest first. Remove a
+   # branch once it stops getting releases; the sync then leaves it alone.
+   # When branches translate a string differently, the newest branch's translation wins.
    branches:
-     4.x: src/translations
      5.x: src/translations
      6.x: resources/translations
    files:
      - app.php
    source_language: en
-   # Languages that stay out of the catalog, such as ones maintained by hand.
-   # The sync leaves their files on each branch alone.
-   exclude_languages: [cy, hr, id, ky, nn]
+   # Languages that stay out of the catalog. The sync leaves their files on each branch alone.
+   exclude_languages: [cy, hr, id, ky]
    commit_message: Update translations
    ```
 
 2. Build the catalog from the translation files already on each branch:
 
    ```sh
-   git fetch origin 4.x 5.x 6.x
+   git fetch origin 5.x 6.x
    php path/to/translation-sync/bin/translation-sync bootstrap
    ```
 
