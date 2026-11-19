@@ -32,7 +32,7 @@ In each language file, untranslated strings are commented out and show the sourc
 The `sync` command runs on a schedule and after each push to the catalog branch. It does two things:
 
 1. It reads each branch's source file (`en/app.php`) and updates the catalog. New strings appear as commented-out lines, and strings that no branch uses anymore are removed. It commits these changes to the catalog branch.
-2. For each branch, it builds every language file from that branch's source strings and the catalog's translations. If any file differs from the branch, it force-pushes a `translation-sync/<branch>` branch and opens or updates a pull request. A branch's files include only the keys in that branch's source file, and leave out untranslated strings so Yii falls back to the source text. Message IDs such as `account_activation_body` are the exception: their untranslated entries keep the source text, because the key isn't readable text.
+2. For each branch, it builds every language file from that branch's source strings and the catalog's translations. If any file differs from the branch, it force-pushes a `t9n/<branch>` branch and opens or updates a pull request. A branch's files include only the keys in that branch's source file, and leave out untranslated strings so Yii falls back to the source text. Message IDs such as `account_activation_body` are the exception: their untranslated entries keep the source text, because the key isn't readable text.
 
 ### One translation per key
 

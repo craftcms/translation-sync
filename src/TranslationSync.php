@@ -14,7 +14,7 @@ use Symfony\Component\Yaml\Yaml;
  */
 final class TranslationSync
 {
-    private const PR_BRANCH_PREFIX = 'translation-sync/';
+    private const PR_BRANCH_PREFIX = 't9n/';
 
     private Git $git;
     private string $sourceLanguage;
