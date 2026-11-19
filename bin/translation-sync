@@ -1,0 +1,55 @@
+#!/usr/bin/env php
+<?php
+
+use craft\translationsync\TranslationSync;
+
+require dirname(__DIR__) . '/vendor/autoload.php';
+
+$usage = <<<TXT
+Usage: translation-sync <command> [options]
+
+Run from a checkout of the catalog branch, with every configured branch fetched.
+
+Commands:
+  bootstrap   Build the catalog from the translation files on each branch.
+  sync        Update the catalog's source strings, then update a pull request
+              for each branch whose translation files are out of date.
+  status      Show how many strings each language has translated.
+
+Options:
+  --remote=<name>  Git remote that has the branches (default: origin)
+  --dry-run        sync: report what would change without committing or pushing
+  --no-pr          sync: push the translation-sync/* branches but skip pull requests
+  --fetch          sync: fetch the latest commit of each configured branch first
+
+TXT;
+
+$command = null;
+$options = [];
+foreach (array_slice($argv, 1) as $arg) {
+    if (preg_match('/^--remote=(.+)$/', $arg, $m)) {
+        $options['remote'] = $m[1];
+    } elseif (in_array($arg, ['--dry-run', '--no-pr', '--fetch'], true)) {
+        $options[substr($arg, 2)] = true;
+    } elseif ($command === null) {
+        $command = $arg;
+    } else {
+        $command = 'invalid';
+    }
+}
+if (!in_array($command, ['bootstrap', 'sync', 'status'], true)) {
+    fwrite(STDERR, $usage);
+    exit(1);
+}
+
+try {
+    $sync = new TranslationSync(getcwd(), $options['remote'] ?? 'origin');
+    match ($command) {
+        'bootstrap' => $sync->bootstrap(),
+        'sync' => $sync->sync(isset($options['dry-run']), !isset($options['no-pr']), isset($options['fetch'])),
+        'status' => $sync->status(),
+    };
+} catch (Throwable $e) {
+    fwrite(STDERR, $e->getMessage() . "\n");
+    exit(1);
+}

@@ -1,0 +1,17 @@
+{
+    "name": "craftcms/translation-sync",
+    "description": "Keeps PHP translation files in sync across release branches from one catalog branch.",
+    "type": "project",
+    "license": "MIT",
+    "require": {
+        "php": "^8.2",
+        "nikic/php-parser": "^5.0",
+        "symfony/yaml": "^7.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "craft\\translationsync\\": "src/"
+        }
+    },
+    "bin": ["bin/translation-sync"]
+}
