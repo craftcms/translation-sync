@@ -14,7 +14,7 @@ return [
 
 ## How it works
 
-A repository keeps its catalog on a dedicated branch, `translations` by default. The catalog lists every source string used by any configured branch, once per language:
+A repository keeps its catalog on a dedicated branch, `translations` by default. It holds one file per language with that language's translations, in the same format as the branch files:
 
 ```
 translation-sync.yml
@@ -22,16 +22,11 @@ de/app.php              German translations
 ja/app.php
 ```
 
-In each language file, untranslated strings are commented out and show the source text. To translate one, uncomment the line and replace the value:
-
-```php
-    // 'New entry' => 'New entry',
-    'New entry' => 'Neuer Eintrag',
-```
+To translate a string, add its key and translation to the language file. `status` shows how many strings each language is missing.
 
 The `sync` command runs on a schedule and after each push to the catalog branch. It does two things:
 
-1. It reads each branch's source file (`en/app.php`) and updates the catalog. New strings appear as commented-out lines, and strings that no branch uses anymore are removed. It commits these changes to the catalog branch.
+1. It reads each branch's source file (`en/app.php`) and removes translations of strings that no branch uses anymore. It commits that change to the catalog branch.
 2. For each branch, it builds every language file from that branch's source strings and the catalog's translations. If any file differs from the branch, it force-pushes a `t9n/<branch>` branch and opens or updates a pull request. A branch's files include only the keys in that branch's source file, and leave out untranslated strings so Yii falls back to the source text. Message IDs such as `account_activation_body` are the exception: their untranslated entries keep the source text, because the key isn't readable text.
 
 ### One translation per key

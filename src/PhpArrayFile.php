@@ -43,10 +43,9 @@ final class PhpArrayFile
     }
 
     /**
-     * Renders rows as a translation file. Rows marked `commented` are written as
-     * `// 'key' => 'value',` lines, which parse() ignores.
+     * Renders rows as a translation file.
      *
-     * @param iterable<array{0:string|int,1:string,2?:bool}> $rows [key, value, commented]
+     * @param iterable<array{0:string|int,1:string}> $rows [key, value]
      * @param string|null $template An existing file whose header (everything before `return [`) to keep.
      */
     public static function render(iterable $rows, ?string $template = null): string
@@ -54,7 +53,7 @@ final class PhpArrayFile
         $pos = $template === null ? false : strpos($template, 'return [');
         $out = ($pos === false ? "<?php\n\n" : substr($template, 0, $pos)) . "return [\n";
         foreach ($rows as $row) {
-            $out .= '    ' . (!empty($row[2]) ? '// ' : '') . self::quote((string)$row[0]) . ' => ' . self::quote($row[1]) . ",\n";
+            $out .= '    ' . self::quote((string)$row[0]) . ' => ' . self::quote($row[1]) . ",\n";
         }
         return $out . "];\n";
     }

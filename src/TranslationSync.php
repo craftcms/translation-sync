@@ -9,8 +9,8 @@ use Symfony\Component\Yaml\Yaml;
  * Keeps translation files on several release branches in sync with one catalog branch.
  *
  * The catalog branch holds `translation-sync.yml` and one `<language>/<file>` per language.
- * Each catalog file lists every source string used by any configured branch, with the
- * untranslated ones commented out. A translation applies to its key on every branch.
+ * Each catalog file holds that language's translations, keyed like the source files.
+ * A translation applies to its key on every branch.
  */
 final class TranslationSync
 {
@@ -95,8 +95,8 @@ final class TranslationSync
     }
 
     /**
-     * Brings the catalog up to date with each branch's source strings, commits and pushes it
-     * when it changed, and then updates a pull request for each branch whose translation files
+     * Drops catalog translations of strings that no branch uses anymore, commits and pushes the
+     * catalog when that changed it, and then updates a pull request for each branch whose translation files
      * are out of date.
      */
     public function sync(bool $dryRun, bool $openPullRequests, bool $fetch): void
@@ -114,7 +114,7 @@ final class TranslationSync
             printf("%s %d catalog files\n", $dryRun ? 'Would update' : 'Updating', count($changedPaths));
             if (!$dryRun) {
                 $this->git->run('git', 'add', '--', ...$changedPaths);
-                $this->git->run('git', 'commit', '-m', 'Update source strings');
+                $this->git->run('git', 'commit', '-m', 'Remove unused translations');
                 $this->git->run('git', 'push', $this->remote, "HEAD:refs/heads/$catalogBranch");
             }
         }
@@ -286,8 +286,8 @@ final class TranslationSync
     }
 
     /**
-     * Writes each catalog file with every source string, commenting out the untranslated ones.
-     * Translations of strings that no branch uses anymore are dropped.
+     * Writes each catalog file in source-string order. Translations of strings that no branch
+     * uses anymore are dropped.
      *
      * @return string[] Paths that changed, relative to the catalog directory.
      */
@@ -298,9 +298,8 @@ final class TranslationSync
         foreach ($catalog as $language => $files) {
             foreach ($this->files as $file) {
                 $rows = [];
-                foreach ($union[$file] as $key => $source) {
-                    $translation = $files[$file][$key] ?? null;
-                    $rows[] = $translation !== null ? [$key, $translation] : [$key, $source, true];
+                foreach (array_intersect_key($union[$file], $files[$file] ?? []) as $key => $source) {
+                    $rows[] = [$key, $files[$file][$key]];
                 }
                 $content = PhpArrayFile::render($rows);
                 $path = "$this->dir/$language/$file";
