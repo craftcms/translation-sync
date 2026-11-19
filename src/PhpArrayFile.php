@@ -17,10 +17,12 @@ use RuntimeException;
 final class PhpArrayFile
 {
     /**
+     * @param array<string,array{0:int,1:int}>|null $lines Set to each key's first and last line.
      * @return array<string,string> Entries in file order.
      */
-    public static function parse(string $code, string $label): array
+    public static function parse(string $code, string $label, ?array &$lines = null): array
     {
+        $lines = [];
         $parser = (new ParserFactory())->createForNewestSupportedVersion();
         foreach ($parser->parse($code) ?? [] as $stmt) {
             if (!$stmt instanceof Return_) {
@@ -36,6 +38,7 @@ final class PhpArrayFile
                     throw new RuntimeException("$label:$line: only string keys and string values are supported.");
                 }
                 $entries[$item->key->value] = $item->value->value;
+                $lines[$item->key->value] = [$item->getStartLine(), $item->getEndLine()];
             }
             return $entries;
         }

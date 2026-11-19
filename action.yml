@@ -7,6 +7,12 @@ inputs:
   token:
     description: Token used to push branches and open pull requests. Pull requests opened with the default GITHUB_TOKEN don't trigger other workflows.
     default: ${{ github.token }}
+  git-user-name:
+    description: Name for the sync's commits.
+    default: github-actions[bot]
+  git-user-email:
+    description: Email for the sync's commits. Use the noreply email of the account that opens the pull requests, so squash-merged sync pull requests aren't mistaken for translation edits.
+    default: 41898282+github-actions[bot]@users.noreply.github.com
   dry-run:
     description: Report what would change without committing, pushing, or opening pull requests.
     default: 'false'
@@ -28,9 +34,11 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.token }}
         DRY_RUN: ${{ inputs.dry-run }}
+        GIT_USER_NAME: ${{ inputs.git-user-name }}
+        GIT_USER_EMAIL: ${{ inputs.git-user-email }}
       run: |
-        git config user.name 'github-actions[bot]'
-        git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+        git config user.name "$GIT_USER_NAME"
+        git config user.email "$GIT_USER_EMAIL"
         args=(sync --fetch)
         if [ "$DRY_RUN" = true ]; then args+=(--dry-run); fi
         php "$GITHUB_ACTION_PATH/bin/translation-sync" "${args[@]}"

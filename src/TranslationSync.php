@@ -11,10 +11,17 @@ use Symfony\Component\Yaml\Yaml;
  * The catalog branch holds `translation-sync.yml` and one `<language>/<file>` per language.
  * Each catalog file holds that language's translations, keyed like the source files.
  * A translation applies to its key on every branch.
+ *
+ * The sync runs both ways. When a translation was changed on a branch more recently than in
+ * the catalog, the branch's version is copied into the catalog first and then reaches the other
+ * branches. `git blame` dates each key's line: the newest commit wins. Lines last changed by the
+ * sync's own git identity, such as merged sync pull requests, don't count as edits.
  */
 final class TranslationSync
 {
     private const PR_BRANCH_PREFIX = 't9n/';
+    /** How much history `--fetch` gets. Edits older than this, which the daily sync has already copied, no longer count. */
+    private const HISTORY_DAYS = 90;
 
     private Git $git;
     private string $sourceLanguage;
@@ -101,20 +108,28 @@ final class TranslationSync
      */
     public function sync(bool $dryRun, bool $openPullRequests, bool $fetch): void
     {
+        $catalogBranch = trim($this->git->run('git', 'rev-parse', '--abbrev-ref', 'HEAD'));
         if ($fetch) {
-            $refspecs = array_map(fn($branch) => "+refs/heads/$branch:refs/remotes/$this->remote/$branch", array_keys($this->branches));
-            $this->git->run('git', 'fetch', '--no-tags', '--depth=1', $this->remote, ...$refspecs);
+            // Blame needs recent history. A branch with no commits in that window gets its latest commit.
+            foreach ([$catalogBranch, ...array_keys($this->branches)] as $branch) {
+                $refspec = "+refs/heads/$branch:refs/remotes/$this->remote/$branch";
+                $this->git->tryRun('git', 'fetch', '--no-tags', '--shallow-since=' . self::HISTORY_DAYS . ' days ago', $this->remote, $refspec)
+                    ?? $this->git->run('git', 'fetch', '--no-tags', '--depth=1', $this->remote, $refspec);
+            }
         }
         $sources = $this->readSources();
         $catalog = $this->readCatalog();
-        $catalogBranch = trim($this->git->run('git', 'rev-parse', '--abbrev-ref', 'HEAD'));
 
+        $copied = $this->copyBranchEdits($sources, $catalog);
         $changedPaths = $this->writeCatalog($catalog, $this->unionSources($sources), $dryRun);
         if ($changedPaths) {
             printf("%s %d catalog files\n", $dryRun ? 'Would update' : 'Updating', count($changedPaths));
             if (!$dryRun) {
+                $message = $copied
+                    ? 'Copy translation edits from ' . implode(', ', array_unique(array_column($copied, 3)))
+                    : 'Remove unused translations';
                 $this->git->run('git', 'add', '--', ...$changedPaths);
-                $this->git->run('git', 'commit', '-m', 'Remove unused translations');
+                $this->git->run('git', 'commit', '-m', $message);
                 $this->git->run('git', 'push', $this->remote, "HEAD:refs/heads/$catalogBranch");
             }
         }
@@ -122,6 +137,83 @@ final class TranslationSync
         foreach ($this->branches as $branch => $path) {
             $this->syncBranch($branch, $path, $sources[$branch], $catalog, $catalogBranch, $dryRun, $openPullRequests);
         }
+    }
+
+    /**
+     * Copies translations that were changed on a branch more recently than in the catalog into
+     * the catalog. When several branches changed a key, the newest change wins.
+     *
+     * @return array<array{0:string,1:string,2:string,3:string}> [language, file, key, branch] for each copied translation
+     */
+    private function copyBranchEdits(array $sources, array &$catalog): array
+    {
+        $syncEmail = trim($this->git->tryRun('git', 'config', 'user.email') ?? '');
+        $copied = [];
+        foreach ($catalog as $language => $files) {
+            foreach ($this->files as $file) {
+                [, $catalogTimes] = $this->datedEntries('HEAD', "$language/$file", null);
+                $winners = [];
+                foreach ($this->branches as $branch => $path) {
+                    [$entries, $times] = $this->datedEntries($this->ref($branch), "$path/$language/$file", $syncEmail);
+                    foreach ($entries as $key => $translation) {
+                        $source = $sources[$branch][$file][$key] ?? null;
+                        // Entries that still show the source text are untranslated, not edits.
+                        if ($source === null || $translation === $source || $translation === '') {
+                            continue;
+                        }
+                        if ($times[$key] > ($winners[$key][0] ?? $catalogTimes[$key] ?? 0)) {
+                            $winners[$key] = [$times[$key], $translation, $branch];
+                        }
+                    }
+                }
+                foreach ($winners as $key => [, $translation, $branch]) {
+                    if ($translation !== ($files[$file][$key] ?? null)) {
+                        $catalog[$language][$file][$key] = $translation;
+                        $copied[] = [$language, $file, (string)$key, $branch];
+                        printf("Copying %s/%s from %s: %s\n", $language, $file, $branch, self::oneLine((string)$key));
+                    }
+                }
+            }
+        }
+        return $copied;
+    }
+
+    /**
+     * Reads a translation file at a revision, and dates each entry by the newest commit that
+     * changed one of its lines. Lines from commits by $ignoreEmail, or from commits at the edge of
+     * a shallow history, get time 0.
+     *
+     * @return array{0:array<string,string>,1:array<string,int>} Entries and their commit times
+     */
+    private function datedEntries(string $rev, string $path, ?string $ignoreEmail): array
+    {
+        $code = $this->git->show($rev, $path);
+        if ($code === null) {
+            return [[], []];
+        }
+        $entries = PhpArrayFile::parse($code, "$rev:$path", $lines);
+
+        $lineTimes = [];
+        $commits = [];
+        $sha = null;
+        foreach (explode("\n", $this->git->run('git', 'blame', '--porcelain', $rev, '--', $path)) as $row) {
+            if (preg_match('/^([0-9a-f]{40,64}) \d+ (\d+)/', $row, $m)) {
+                [, $sha, $lineNumber] = $m;
+                $commits[$sha] ??= ['time' => 0, 'ignore' => false];
+            } elseif (str_starts_with($row, "\t")) {
+                $lineTimes[(int)$lineNumber] = $commits[$sha]['ignore'] ? 0 : $commits[$sha]['time'];
+            } elseif (str_starts_with($row, 'committer-time ')) {
+                $commits[$sha]['time'] = (int)substr($row, 15);
+            } elseif ($row === 'boundary' || ($ignoreEmail !== null && $row === "author-mail <$ignoreEmail>")) {
+                $commits[$sha]['ignore'] = true;
+            }
+        }
+
+        $times = [];
+        foreach ($lines as $key => [$start, $end]) {
+            $times[$key] = max(array_map(fn($n) => $lineTimes[$n] ?? 0, range($start, $end)));
+        }
+        return [$entries, $times];
     }
 
     /**
