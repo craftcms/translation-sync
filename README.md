@@ -69,6 +69,10 @@ When you run the CLI yourself, it uses your git identity, so your own edits on b
    source_language: en
    # Languages that stay out of the catalog. The sync leaves their files on each branch alone.
    exclude_languages: [cy, hr, id, ky]
+   # To leave a language alone on one branch only, give that branch a path and its own list:
+   #   5.x:
+   #     path: src/translations
+   #     exclude_languages: [cy, hr]
    commit_message: Update translations
    # Branch each pull request comes from. {branch} is the target branch.
    pr_branch: t9n/{branch}

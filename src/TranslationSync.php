@@ -30,6 +30,8 @@ final class TranslationSync
     private array $excludeLanguages;
     /** @var array<string,string> Branch name => translations path, oldest branch first */
     private array $branches;
+    /** @var array<string,string[]> Branch name => languages that branch leaves alone */
+    private array $branchExcludeLanguages = [];
     private string $commitMessage;
     /** Pull request branch name, with `{branch}` standing for the target branch */
     private string $prBranch;
@@ -44,7 +46,15 @@ final class TranslationSync
         $this->sourceLanguage = $config['source_language'] ?? 'en';
         $this->files = $config['files'] ?? throw new RuntimeException('translation-sync.yml must list `files`.');
         $this->excludeLanguages = $config['exclude_languages'] ?? [];
-        $this->branches = $config['branches'] ?? throw new RuntimeException('translation-sync.yml must list `branches`.');
+        $this->branches = [];
+        foreach ($config['branches'] ?? throw new RuntimeException('translation-sync.yml must list `branches`.') as $branch => $branchConfig) {
+            // A branch is either `name: path` or `name: {path: …, exclude_languages: […]}`.
+            if (is_array($branchConfig)) {
+                $this->branchExcludeLanguages[$branch] = $branchConfig['exclude_languages'] ?? [];
+                $branchConfig = $branchConfig['path'] ?? throw new RuntimeException("Branch $branch must have a `path`.");
+            }
+            $this->branches[$branch] = $branchConfig;
+        }
         $this->commitMessage = $config['commit_message'] ?? 'Update translations';
         $this->prBranch = $config['pr_branch'] ?? 't9n/{branch}';
         if (!str_contains($this->prBranch, '{branch}') || $this->prBranch === '{branch}') {
@@ -66,7 +76,7 @@ final class TranslationSync
 
         foreach ($this->branches as $branch => $path) {
             foreach ($this->git->dirs($this->ref($branch), $path) as $language) {
-                if (!$this->isTargetLanguage($language)) {
+                if (!$this->isTargetLanguage($language, $branch)) {
                     continue;
                 }
                 foreach ($this->files as $file) {
@@ -163,6 +173,9 @@ final class TranslationSync
                 [, $catalogTimes] = $this->datedEntries('HEAD', "$language/$file", null, true);
                 $winners = [];
                 foreach ($this->branches as $branch => $path) {
+                    if (!$this->isTargetLanguage($language, $branch)) {
+                        continue;
+                    }
                     [$entries, $times] = $this->datedEntries($this->ref($branch), "$path/$language/$file", $syncEmail, false);
                     foreach ($entries as $key => $translation) {
                         $source = $sources[$branch][$file][$key] ?? null;
@@ -258,6 +271,9 @@ final class TranslationSync
             $git = new Git($worktree);
             $changes = [];
             foreach ($catalog as $language => $files) {
+                if (!$this->isTargetLanguage($language, $branch)) {
+                    continue;
+                }
                 foreach ($this->files as $file) {
                     if (!$sources[$file]) {
                         continue;
@@ -442,9 +458,11 @@ final class TranslationSync
         }
     }
 
-    private function isTargetLanguage(string $language): bool
+    private function isTargetLanguage(string $language, ?string $branch = null): bool
     {
-        return $language !== $this->sourceLanguage && !in_array($language, $this->excludeLanguages, true);
+        return $language !== $this->sourceLanguage
+            && !in_array($language, $this->excludeLanguages, true)
+            && !in_array($language, $branch === null ? [] : $this->branchExcludeLanguages[$branch] ?? [], true);
     }
 
     private function ref(string $branch): string
