@@ -188,14 +188,13 @@ final class TranslationSync
     }
 
     /**
-     * Returns since when a catalog file has been missing a key: the commit that last removed it,
-     * or else the commit that added the file. Run only for keys the catalog doesn't have.
+     * Returns when a key was last removed from a catalog file, or 0 when the fetched history
+     * never had it. Run only for keys the catalog doesn't have.
      */
     private function removalTime(string $path, string $key): int
     {
-        $removed = $this->git->run('git', 'log', '-1', '--format=%ct', '-S', PhpArrayFile::quote($key) . ' => ', 'HEAD', '--', $path);
-        // In a shallow history, the oldest fetched commit counts as adding every file.
-        return (int)trim($removed ?: $this->git->run('git', 'log', '-1', '--format=%ct', '--diff-filter=A', 'HEAD', '--', $path));
+        // A key the catalog never had loses to any dated branch edit.
+        return (int)trim($this->git->run('git', 'log', '-1', '--format=%ct', '-S', PhpArrayFile::quote($key) . ' => ', 'HEAD', '--', $path));
     }
 
     /**
