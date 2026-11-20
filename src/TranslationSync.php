@@ -113,8 +113,12 @@ final class TranslationSync
             // Blame needs recent history. A branch with no commits in that window gets its latest commit.
             foreach ([$catalogBranch, ...array_keys($this->branches)] as $branch) {
                 $refspec = "+refs/heads/$branch:refs/remotes/$this->remote/$branch";
-                $this->git->tryRun('git', 'fetch', '--no-tags', '--shallow-since=' . self::HISTORY_DAYS . ' days ago', $this->remote, $refspec)
-                    ?? $this->git->run('git', 'fetch', '--no-tags', '--depth=1', $this->remote, $refspec);
+                $fetched = $this->git->tryRun('git', 'fetch', '--no-tags', '--shallow-since=' . self::HISTORY_DAYS . ' days ago', $this->remote, $refspec)
+                    ?? $this->git->tryRun('git', 'fetch', '--no-tags', '--depth=1', $this->remote, $refspec);
+                // The catalog branch may not be pushed yet; it's already checked out.
+                if ($fetched === null && $branch !== $catalogBranch) {
+                    throw new RuntimeException("Couldn't fetch $branch from $this->remote.");
+                }
             }
         }
         $sources = $this->readSources();
@@ -151,17 +155,18 @@ final class TranslationSync
         $copied = [];
         foreach ($catalog as $language => $files) {
             foreach ($this->files as $file) {
-                [, $catalogTimes] = $this->datedEntries('HEAD', "$language/$file", null);
+                [, $catalogTimes] = $this->datedEntries('HEAD', "$language/$file", null, true);
                 $winners = [];
                 foreach ($this->branches as $branch => $path) {
-                    [$entries, $times] = $this->datedEntries($this->ref($branch), "$path/$language/$file", $syncEmail);
+                    [$entries, $times] = $this->datedEntries($this->ref($branch), "$path/$language/$file", $syncEmail, false);
                     foreach ($entries as $key => $translation) {
                         $source = $sources[$branch][$file][$key] ?? null;
                         // Entries that still show the source text are untranslated, not edits.
                         if ($source === null || $translation === $source || $translation === '') {
                             continue;
                         }
-                        if ($times[$key] > ($winners[$key][0] ?? $catalogTimes[$key] ?? 0)) {
+                        $catalogTimes[$key] ??= $times[$key] ? $this->removalTime("$language/$file", (string)$key) : 0;
+                        if ($times[$key] > ($winners[$key][0] ?? $catalogTimes[$key])) {
                             $winners[$key] = [$times[$key], $translation, $branch];
                         }
                     }
@@ -179,13 +184,25 @@ final class TranslationSync
     }
 
     /**
+     * Returns since when a catalog file has been missing a key: the commit that last removed it,
+     * or else the commit that added the file. Run only for keys the catalog doesn't have.
+     */
+    private function removalTime(string $path, string $key): int
+    {
+        $removed = $this->git->run('git', 'log', '-1', '--format=%ct', '-S', PhpArrayFile::quote($key) . ' => ', 'HEAD', '--', $path);
+        // In a shallow history, the oldest fetched commit counts as adding every file.
+        return (int)trim($removed ?: $this->git->run('git', 'log', '-1', '--format=%ct', '--diff-filter=A', 'HEAD', '--', $path));
+    }
+
+    /**
      * Reads a translation file at a revision, and dates each entry by the newest commit that
-     * changed one of its lines. Lines from commits by $ignoreEmail, or from commits at the edge of
-     * a shallow history, get time 0.
+     * changed one of its lines. Lines from commits by $ignoreEmail get time 0. So do lines from
+     * root commits and commits at the edge of a shallow history, unless $dateRoot is set: the
+     * catalog's lines keep those dates, so a newly created catalog isn't older than every edit.
      *
      * @return array{0:array<string,string>,1:array<string,int>} Entries and their commit times
      */
-    private function datedEntries(string $rev, string $path, ?string $ignoreEmail): array
+    private function datedEntries(string $rev, string $path, ?string $ignoreEmail, bool $dateRoot): array
     {
         $code = $this->git->show($rev, $path);
         if ($code === null) {
@@ -196,7 +213,7 @@ final class TranslationSync
         $lineTimes = [];
         $commits = [];
         $sha = null;
-        foreach (explode("\n", $this->git->run('git', 'blame', '--porcelain', $rev, '--', $path)) as $row) {
+        foreach (explode("\n", $this->git->run(...['git', 'blame', '--porcelain', ...($dateRoot ? ['--root'] : []), $rev, '--', $path])) as $row) {
             if (preg_match('/^([0-9a-f]{40,64}) \d+ (\d+)/', $row, $m)) {
                 [, $sha, $lineNumber] = $m;
                 $commits[$sha] ??= ['time' => 0, 'ignore' => false];
