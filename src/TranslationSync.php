@@ -77,8 +77,8 @@ final class TranslationSync
                     }
                     foreach (PhpArrayFile::parse($code, "$branch:$path/$language/$file") as $key => $translation) {
                         $source = $sources[$branch][$file][$key] ?? null;
-                        // Strings that still show the source text are untranslated.
-                        if ($source === null || $translation === $source || $translation === '') {
+                        // An entry counts as translated even when it matches the source text.
+                        if ($source === null || $translation === '') {
                             continue;
                         }
                         $catalog[$language][$file][$key] = $translation;
@@ -166,8 +166,7 @@ final class TranslationSync
                     [$entries, $times] = $this->datedEntries($this->ref($branch), "$path/$language/$file", $syncEmail, false);
                     foreach ($entries as $key => $translation) {
                         $source = $sources[$branch][$file][$key] ?? null;
-                        // Entries that still show the source text are untranslated, not edits.
-                        if ($source === null || $translation === $source || $translation === '') {
+                        if ($source === null || $translation === '') {
                             continue;
                         }
                         $catalogTimes[$key] ??= $times[$key] ? $this->removalTime("$language/$file", (string)$key) : 0;
