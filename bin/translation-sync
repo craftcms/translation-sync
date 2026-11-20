@@ -19,7 +19,7 @@ Commands:
 Options:
   --remote=<name>  Git remote that has the branches (default: origin)
   --dry-run        sync: report what would change without committing or pushing
-  --no-pr          sync: push the t9n/* branches but skip pull requests
+  --no-pr          sync: push the pull request branches but skip pull requests
   --fetch          sync: fetch the last 90 days of each configured branch first
 
 TXT;

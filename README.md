@@ -28,7 +28,7 @@ The `sync` command runs on a schedule and after each push to the catalog branch.
 
 1. It copies translations that were edited on a branch into the catalog (see below).
 2. It reads each branch's source file (`en/app.php`) and removes translations of strings that no branch uses anymore. It commits these catalog changes to the catalog branch.
-3. For each branch, it builds every language file from that branch's source strings and the catalog's translations. If any file differs from the branch, it force-pushes a `t9n/<branch>` branch and opens or updates a pull request. A branch's files include only the keys in that branch's source file, and leave out untranslated strings so Yii falls back to the source text. Message IDs such as `account_activation_body` are the exception: their untranslated entries keep the source text, because the key isn't readable text.
+3. For each branch, it builds every language file from that branch's source strings and the catalog's translations. If any file differs from the branch, it force-pushes a pull request branch (`t9n/<branch>` by default) and opens or updates a pull request. A branch's files include only the keys in that branch's source file, and leave out untranslated strings so Yii falls back to the source text. Message IDs such as `account_activation_body` are the exception: their untranslated entries keep the source text, because the key isn't readable text.
 
 ### One translation per key
 
@@ -68,6 +68,8 @@ When you run the CLI yourself, it uses your git identity, so your own edits on b
    # Languages that stay out of the catalog. The sync leaves their files on each branch alone.
    exclude_languages: [cy, hr, id, ky]
    commit_message: Update translations
+   # Branch each pull request comes from. {branch} is the target branch.
+   pr_branch: t9n/{branch}
    ```
 
 2. Build the catalog from the translation files already on each branch:

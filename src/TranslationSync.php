@@ -19,7 +19,6 @@ use Symfony\Component\Yaml\Yaml;
  */
 final class TranslationSync
 {
-    private const PR_BRANCH_PREFIX = 't9n/';
     /** How much history `--fetch` gets. Edits older than this, which the daily sync has already copied, no longer count. */
     private const HISTORY_DAYS = 90;
 
@@ -32,6 +31,8 @@ final class TranslationSync
     /** @var array<string,string> Branch name => translations path, oldest branch first */
     private array $branches;
     private string $commitMessage;
+    /** Pull request branch name, with `{branch}` standing for the target branch */
+    private string $prBranch;
 
     public function __construct(private readonly string $dir, private readonly string $remote = 'origin')
     {
@@ -45,6 +46,10 @@ final class TranslationSync
         $this->excludeLanguages = $config['exclude_languages'] ?? [];
         $this->branches = $config['branches'] ?? throw new RuntimeException('translation-sync.yml must list `branches`.');
         $this->commitMessage = $config['commit_message'] ?? 'Update translations';
+        $this->prBranch = $config['pr_branch'] ?? 't9n/{branch}';
+        if (!str_contains($this->prBranch, '{branch}') || $this->prBranch === '{branch}') {
+            throw new RuntimeException('`pr_branch` must contain `{branch}` plus a prefix or suffix, such as `t9n/{branch}`.');
+        }
         $this->git = new Git($dir);
     }
 
@@ -247,7 +252,7 @@ final class TranslationSync
      */
     private function syncBranch(string $branch, string $path, array $sources, array $catalog, string $catalogBranch, bool $dryRun, bool $openPullRequests): void
     {
-        $prBranch = self::PR_BRANCH_PREFIX . $branch;
+        $prBranch = str_replace('{branch}', $branch, $this->prBranch);
         $worktree = sys_get_temp_dir() . '/translation-sync-' . getmypid() . '-' . preg_replace('/[^\w.-]/', '_', $branch);
         $this->git->run('git', 'worktree', 'add', '--detach', $worktree, $this->ref($branch));
 
