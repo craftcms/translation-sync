@@ -309,7 +309,7 @@ final class TranslationSync
             foreach ($changes as $row) {
                 $body .= '| ' . implode(' | ', $row) . " |\n";
             }
-            $body .= "\nTo change a translation, edit it on the `$catalogBranch` branch. The sync rebuilds this pull request each time it runs, so commits pushed here get overwritten.\n";
+            $body .= "\nThis pull request is rebuilt on every sync, so commits pushed here are lost. To change a translation, edit it on the `$catalogBranch` branch, or open a separate pull request against `$branch`.\n";
             echo "$branch: " . count($changes) . " files out of date\n" . $git->run('git', 'diff', '--stat');
 
             if ($dryRun) {
